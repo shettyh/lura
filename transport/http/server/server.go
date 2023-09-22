@@ -127,6 +127,41 @@ func RunServerWithLoggerFactory(l logging.Logger) func(context.Context, config.S
 	}
 }
 
+func RunServerWithListener(l logging.Logger, lc net.ListenConfig) func(context.Context, config.ServiceConfig, http.Handler) error {
+	return func(ctx context.Context, cfg config.ServiceConfig, handler http.Handler) error {
+		done := make(chan error)
+		s := NewServerWithLogger(cfg, handler, l)
+
+		listener, err := lc.Listen(ctx, "tcp", s.Addr)
+		if err != nil {
+			return err
+		}
+
+		if s.TLSConfig == nil {
+			go func() {
+				done <- s.Serve(listener)
+			}()
+		} else {
+			if cfg.TLS.PublicKey == "" {
+				return ErrPublicKey
+			}
+			if cfg.TLS.PrivateKey == "" {
+				return ErrPrivateKey
+			}
+			go func() {
+				done <- s.ServeTLS(listener, cfg.TLS.PublicKey, cfg.TLS.PrivateKey)
+			}()
+		}
+
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			return s.Shutdown(context.Background())
+		}
+	}
+}
+
 // NewServer returns a http.Server ready to serve the injected handler
 func NewServer(cfg config.ServiceConfig, handler http.Handler) *http.Server {
 	return NewServerWithLogger(cfg, handler, nil)
